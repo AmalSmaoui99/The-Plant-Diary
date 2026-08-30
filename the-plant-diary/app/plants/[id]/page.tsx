@@ -7,6 +7,9 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { Plant } from "@/types/Plant";
 import { CareEvent } from "@/types/CareEvent";
+import {
+  getCurrentPlantSeason,
+} from "@/lib/season";
 
 export default function PlantDiaryPage() {
   const params = useParams();
@@ -21,17 +24,60 @@ export default function PlantDiaryPage() {
   const [careEvents, setCareEvents] =
     useState<CareEvent[]>([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [loading, setLoading] =useState(true);
 
-  const [uploadingPhoto, setUploadingPhoto] =
-    useState(false);
+  const [uploadingPhoto, setUploadingPhoto] =useState(false);
 
-  const [photoError, setPhotoError] =
-    useState("");
+  const [photoError, setPhotoError] =useState("");
 
-  const [errorMessage, setErrorMessage] =
-    useState("");
+  const [errorMessage, setErrorMessage] =useState("");
+
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const [editNickname, setEditNickname] =useState("");
+
+  const [editWateringDays, setEditWateringDays] =useState(7);
+
+  const [
+    editSummerWateringDays,
+    setEditSummerWateringDays,
+  ] = useState(7);
+
+  const [
+    editWinterWateringDays,
+    setEditWinterWateringDays,
+  ] = useState(12);
+
+  const [
+    editSummerFertilizerDays,
+    setEditSummerFertilizerDays,
+  ] = useState(30);
+
+  const [
+    editWinterFertilizerDays,
+    setEditWinterFertilizerDays,
+  ] = useState(60);
+
+  const [
+    editSeasonalCareEnabled,
+    setEditSeasonalCareEnabled,
+  ] = useState(true);
+
+  const [
+    editFertilizerEnabled,
+    setEditFertilizerEnabled,
+  ] = useState(true);
+
+  const [
+    editFertilizerDays,
+    setEditFertilizerDays,
+  ] = useState(30);
+
+  const [
+    editMoistRecheckDays,
+    setEditMoistRecheckDays,
+  ] = useState(2);
 
   useEffect(() => {
     async function loadPlant() {
@@ -132,6 +178,29 @@ export default function PlantDiaryPage() {
       return;
     }
 
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (
+      user &&
+      plant.image_path?.startsWith(
+        `${user.id}/`
+      )
+    ) {
+      const { error: storageError } =
+        await supabase.storage
+          .from("plant-images")
+          .remove([plant.image_path]);
+
+      if (storageError) {
+        console.warn(
+          "Could not delete plant image:",
+          storageError
+        );
+      }
+    }
+
     const confirmed = window.confirm(
       `Delete ${plant.nickname}?\n\nThis will permanently delete the plant and its entire care history.`
     );
@@ -192,6 +261,19 @@ export default function PlantDiaryPage() {
 
     setPhotoError("");
 
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setPhotoError(
+        "You must be signed in to upload photos."
+      );
+      setUploadingPhoto(false);
+      return;
+    }
+
     // Only allow images
     if (!file.type.startsWith("image/")) {
       setPhotoError("Please choose an image file.");
@@ -216,7 +298,7 @@ export default function PlantDiaryPage() {
         "jpg";
 
       const newImagePath =
-        `${plant.id}/personal-${Date.now()}.${extension}`;
+        `${user.id}/${plant.id}/personal-${Date.now()}.${extension}`;
 
       // Upload the new image
       const { error: uploadError } =
@@ -300,6 +382,178 @@ export default function PlantDiaryPage() {
       setUploadingPhoto(false);
     }
   }
+
+  function startEditing() {
+    if (!plant) {
+      return;
+    }
+
+    setEditNickname(plant.nickname);
+
+    setEditWateringDays(
+      getActiveWateringInterval()
+    );
+
+    setEditFertilizerEnabled(
+      plant.fertilizer_enabled
+    );
+
+    setEditFertilizerDays(
+      plant.fertilizer_interval_days ?? 30
+    );
+
+    setEditSummerWateringDays(
+      plant.summer_watering_check_days ??
+        getActiveWateringInterval()
+    );
+
+    setEditWinterWateringDays(
+      plant.winter_watering_check_days ??
+        getActiveWateringInterval()
+    );
+
+    setEditSummerFertilizerDays(
+      plant.summer_fertilizer_interval_days ??
+        plant.fertilizer_interval_days ??
+        30
+    );
+
+    setEditWinterFertilizerDays(
+      plant.winter_fertilizer_interval_days ??
+        plant.fertilizer_interval_days ??
+        60
+    );
+
+    setEditMoistRecheckDays(
+      plant.moist_recheck_days ?? 2
+    );
+
+    setEditSeasonalCareEnabled(
+      plant.seasonal_care_enabled
+    );
+
+    setEditing(true);
+  }
+
+  async function savePlantChanges() {
+    if (!plant) {
+      return;
+    }
+
+    if (!editNickname.trim()) {
+      setErrorMessage(
+        "Plant nickname cannot be empty."
+      );
+      return;
+    }
+
+    if (editWateringDays < 1) {
+      setErrorMessage(
+        "Soil-check interval must be at least 1 day."
+      );
+      return;
+    }
+
+    if (
+      editFertilizerEnabled &&
+      editFertilizerDays < 1
+    ) {
+      setErrorMessage(
+        "Fertilizer interval must be at least 1 day."
+      );
+      return;
+    }
+
+    setSaving(true);
+    setErrorMessage("");
+
+    const updates = {
+      nickname: editNickname.trim(),
+      moist_recheck_days:
+        editMoistRecheckDays,
+
+      watering_check_days:
+        editWateringDays,
+
+      fertilizer_enabled:
+        editFertilizerEnabled,
+
+      fertilizer_interval_days:
+        editFertilizerEnabled
+          ? editFertilizerDays
+          : null,
+
+      seasonal_care_enabled:
+        editSeasonalCareEnabled,
+
+      summer_watering_check_days:
+        editSummerWateringDays,
+
+      winter_watering_check_days:
+        editWinterWateringDays,
+
+      summer_fertilizer_interval_days:
+        editFertilizerEnabled
+          ? editSummerFertilizerDays
+          : null,
+
+      winter_fertilizer_interval_days:
+        editFertilizerEnabled
+          ? editWinterFertilizerDays
+          : null,
+    };
+
+    const { error } = await supabase
+      .from("plants")
+      .update(updates)
+      .eq("id", plant.id);
+
+    if (error) {
+      console.warn(
+        "Could not update plant:",
+        error
+      );
+
+      setErrorMessage(
+        "Could not save plant changes."
+      );
+
+      setSaving(false);
+      return;
+    }
+
+    setPlant({
+      ...plant,
+      ...updates,
+    });
+
+    setEditing(false);
+    setSaving(false);
+  }
+
+  function getActiveWateringInterval(): number {
+    if (!plant) {
+      return 0;
+    }
+
+    if (!plant.seasonal_care_enabled) {
+      return getActiveWateringInterval();
+    }
+
+    if (currentSeason === "summer") {
+      return (
+        plant.summer_watering_check_days ??
+        getActiveWateringInterval()
+      );
+    }
+
+    return (
+      plant.winter_watering_check_days ??
+      getActiveWateringInterval()
+    );
+  }
+
+  const currentSeason = getCurrentPlantSeason();
 
   if (loading) {
     return (
@@ -386,6 +640,14 @@ export default function PlantDiaryPage() {
               </p>
             )}
 
+            {plant.seasonal_care_enabled && (
+              <div className="mt-3 inline-block rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-800">
+                {currentSeason === "summer"
+                  ? "☀️ Growing season schedule active"
+                  : "❄️ Winter schedule active"}
+              </div>
+            )}
+
             <div className="mt-5">
               <label
                 className={`inline-block rounded-lg px-4 py-2 text-sm font-medium text-white ${
@@ -399,7 +661,7 @@ export default function PlantDiaryPage() {
                   : plant.image_url
                     ? "📷 Change photo"
                     : "📷 Add photo"}
-
+                        
                 <input
                   type="file"
                   accept="image/jpeg,image/png,image/webp"
@@ -419,6 +681,13 @@ export default function PlantDiaryPage() {
                 />
               </label>
 
+              <button
+                onClick={startEditing}
+                className="ml-2 rounded-lg border border-green-700 px-4 py-2 text-sm font-medium text-green-800 hover:bg-green-50"
+              >
+                ✏️ Edit plant
+              </button>
+
               {photoError && (
                 <p className="mt-2 text-sm text-red-600">
                   {photoError}
@@ -428,164 +697,399 @@ export default function PlantDiaryPage() {
           </div>
         </section>
 
+        {editing && (
+          <section className="mt-6 rounded-2xl bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">
+              ✏️ Edit plant
+            </h2>
+
+            <div className="mt-5 space-y-5">
+
+              {/* Nickname */}
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  Nickname
+                </label>
+
+                <input
+                  value={editNickname}
+                  onChange={(event) =>
+                    setEditNickname(
+                      event.target.value
+                    )
+                  }
+                  className="w-full rounded-lg border border-gray-300 p-3 outline-none focus:border-green-600"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  💦 If soil is still moist, check again after
+                </label>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="1"
+                    value={editMoistRecheckDays}
+                    onChange={(event) =>
+                      setEditMoistRecheckDays(
+                        Number(event.target.value)
+                      )
+                    }
+                    className="w-24 rounded-lg border border-gray-300 p-3"
+                  />
+
+                  <span className="text-gray-600">
+                    days
+                  </span>
+                </div>
+              </div>
+
+              {/* Watering */}
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  💧 Check soil every
+                </label>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="1"
+                    value={editWateringDays}
+                    onChange={(event) =>
+                      setEditWateringDays(
+                        Number(
+                          event.target.value
+                        )
+                      )
+                    }
+                    className="w-24 rounded-lg border border-gray-300 p-3"
+                  />
+
+                  <span className="text-gray-600">
+                    days
+                  </span>
+                </div>
+              </div>
+
+              {/* Fertilizer */}
+              <div className="rounded-xl bg-green-50 p-4">
+                <label className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={
+                      editFertilizerEnabled
+                    }
+                    onChange={(event) =>
+                      setEditFertilizerEnabled(
+                        event.target.checked
+                      )
+                    }
+                  />
+
+                  <span className="font-medium">
+                    🌿 Track fertilizer
+                  </span>
+                </label>
+
+                {editFertilizerEnabled && (
+                  <div className="mt-4">
+                    <label className="mb-1 block text-sm font-medium">
+                      Fertilize every
+                    </label>
+
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min="1"
+                        value={
+                          editFertilizerDays
+                        }
+                        onChange={(event) =>
+                          setEditFertilizerDays(
+                            Number(
+                              event.target.value
+                            )
+                          )
+                        }
+                        className="w-24 rounded-lg border border-gray-300 bg-white p-3"
+                      />
+
+                      <span>days</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={savePlantChanges}
+                  disabled={saving}
+                  className="rounded-lg bg-green-700 px-5 py-2 font-medium text-white hover:bg-green-800 disabled:opacity-50"
+                >
+                  {saving
+                    ? "Saving..."
+                    : "Save changes"}
+                </button>
+
+                <button
+                  onClick={() =>
+                    setEditing(false)
+                  }
+                  disabled={saving}
+                  className="rounded-lg bg-gray-100 px-5 py-2 text-gray-700 hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+              </div>
+
+            </div>
+          </section>
+        )}
+
+
+
         {/* Care overview */}
 
-        <div className="mt-8 grid gap-5 md:grid-cols-2">
+        <div className="space-y-5">
 
-          {/* Water */}
-
-          <section className="rounded-2xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-semibold">
-              💧 Watering
-            </h2>
-
-            <div className="mt-5 space-y-3">
-              <div>
-                <p className="text-sm text-gray-500">
-                  Last watered
-                </p>
-
-                <p className="font-medium">
-                  {formatDate(
-                    lastWatered?.event_date
-                  )}
-                </p>
-              </div>
+          {/* Seasonal care toggle */}
+          <div className="rounded-xl bg-green-50 p-4">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={editSeasonalCareEnabled}
+                onChange={(event) =>
+                  setEditSeasonalCareEnabled(
+                    event.target.checked
+                  )
+                }
+                className="h-4 w-4"
+              />
 
               <div>
-                <p className="text-sm text-gray-500">
-                  Soil-check interval
-                </p>
-
                 <p className="font-medium">
-                  Every{" "}
-                  {
-                    plant.watering_check_days
-                  }{" "}
-                  days
+                  🌦️ Use seasonal care
+                </p>
+
+                <p className="text-xs text-gray-500">
+                  Use different schedules for the growing
+                  and winter seasons.
                 </p>
               </div>
-            </div>
-          </section>
-
-          {/* Fertilizer */}
-
-          <section className="rounded-2xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-semibold">
-              🌿 Fertilizer
-            </h2>
-
-            {plant.fertilizer_enabled ? (
-              <div className="mt-5 space-y-3">
-                <div>
-                  <p className="text-sm text-gray-500">
-                    Last fertilized
-                  </p>
-
-                  <p className="font-medium">
-                    {formatDate(
-                      lastFertilized
-                        ?.event_date
-                    )}
-                  </p>
-                </div>
-
-                <div>
-                  <p className="text-sm text-gray-500">
-                    Interval
-                  </p>
-
-                  <p className="font-medium">
-                    Every{" "}
-                    {
-                      plant.fertilizer_interval_days
-                    }{" "}
-                    days
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-5 text-gray-500">
-                Fertilizer tracking is
-                disabled.
-              </p>
-            )}
-          </section>
-        </div>
-
-        {/* Environment */}
-
-        <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">
-            ☀️ Environment
-          </h2>
-
-          <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-
-            <div>
-              <p className="text-sm text-gray-500">
-                Light
-              </p>
-
-              <p className="font-medium">
-                {plant.light_requirement_level ??
-                  "Unknown"}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500">
-                Light range
-              </p>
-
-              <p className="font-medium">
-                {plant.min_lux != null &&
-                plant.max_lux != null
-                  ? `${plant.min_lux.toLocaleString()}–${plant.max_lux.toLocaleString()} lux`
-                  : "Unknown"}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500">
-                Temperature
-              </p>
-
-              <p className="font-medium">
-                {plant.min_temp_celsius !=
-                  null &&
-                plant.max_temp_celsius !=
-                  null
-                  ? `${plant.min_temp_celsius}–${plant.max_temp_celsius}°C`
-                  : "Unknown"}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-sm text-gray-500">
-                Ideal humidity
-              </p>
-
-              <p className="font-medium">
-                {plant.ideal_humidity_percent !=
-                null
-                  ? `${plant.ideal_humidity_percent}%`
-                  : "Unknown"}
-              </p>
-            </div>
+            </label>
           </div>
 
-          {plant.care_source && (
-            <p className="mt-5 text-xs text-gray-400">
-              Care baseline:{" "}
-              {plant.care_source}
-              {plant.care_confidence
-                ? ` · ${plant.care_confidence} confidence`
-                : ""}
-            </p>
-          )}
-        </section>
+          {editSeasonalCareEnabled ? (
+            <>
+              {/* Summer */}
+              <div className="rounded-2xl border border-yellow-200 bg-yellow-50 p-5">
+                <h3 className="font-semibold">
+                  ☀️ Growing season
+                </h3>
 
+                <p className="mt-1 text-xs text-gray-500">
+                  April – September
+                </p>
+
+                <div className="mt-5 space-y-4">
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">
+                      💧 Check soil every
+                    </label>
+
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min="1"
+                        value={editSummerWateringDays}
+                        onChange={(event) =>
+                          setEditSummerWateringDays(
+                            Number(event.target.value)
+                          )
+                        }
+                        className="w-24 rounded-lg border border-gray-300 bg-white p-3"
+                      />
+
+                      <span className="text-gray-600">
+                        days
+                      </span>
+                    </div>
+                  </div>
+
+                  {editFertilizerEnabled && (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium">
+                        🌿 Fertilize every
+                      </label>
+
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          value={editSummerFertilizerDays}
+                          onChange={(event) =>
+                            setEditSummerFertilizerDays(
+                              Number(event.target.value)
+                            )
+                          }
+                          className="w-24 rounded-lg border border-gray-300 bg-white p-3"
+                        />
+
+                        <span className="text-gray-600">
+                          days
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+              </div>
+
+              {/* Winter */}
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+                <h3 className="font-semibold">
+                  ❄️ Winter / lower-growth season
+                </h3>
+
+                <p className="mt-1 text-xs text-gray-500">
+                  October – March
+                </p>
+
+                <div className="mt-5 space-y-4">
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">
+                      💧 Check soil every
+                    </label>
+
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min="1"
+                        value={editWinterWateringDays}
+                        onChange={(event) =>
+                          setEditWinterWateringDays(
+                            Number(event.target.value)
+                          )
+                        }
+                        className="w-24 rounded-lg border border-gray-300 bg-white p-3"
+                      />
+
+                      <span className="text-gray-600">
+                        days
+                      </span>
+                    </div>
+                  </div>
+
+                  {editFertilizerEnabled && (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium">
+                        🌿 Fertilize every
+                      </label>
+
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          value={editWinterFertilizerDays}
+                          onChange={(event) =>
+                            setEditWinterFertilizerDays(
+                              Number(event.target.value)
+                            )
+                          }
+                          className="w-24 rounded-lg border border-gray-300 bg-white p-3"
+                        />
+
+                        <span className="text-gray-600">
+                          days
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Non-seasonal watering */}
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  💧 Check soil every
+                </label>
+
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="1"
+                    value={editWateringDays}
+                    onChange={(event) =>
+                      setEditWateringDays(
+                        Number(event.target.value)
+                      )
+                    }
+                    className="w-24 rounded-lg border border-gray-300 p-3"
+                  />
+
+                  <span className="text-gray-600">
+                    days
+                  </span>
+                </div>
+              </div>
+
+              {editFertilizerEnabled && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium">
+                    🌿 Fertilize every
+                  </label>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min="1"
+                      value={editFertilizerDays}
+                      onChange={(event) =>
+                        setEditFertilizerDays(
+                          Number(event.target.value)
+                        )
+                      }
+                      className="w-24 rounded-lg border border-gray-300 p-3"
+                    />
+
+                    <span className="text-gray-600">
+                      days
+                    </span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Fertilizer master toggle */}
+          <div className="rounded-xl bg-green-50 p-4">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={editFertilizerEnabled}
+                onChange={(event) =>
+                  setEditFertilizerEnabled(
+                    event.target.checked
+                  )
+                }
+              />
+
+              <span className="font-medium">
+                🌿 Track fertilizer
+              </span>
+            </label>
+          </div>
+
+        </div>
+    
         {/* History */}
 
         <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm">

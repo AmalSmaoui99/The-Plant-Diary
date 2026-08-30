@@ -17,6 +17,16 @@ export type Plant = {
 
   watering_check_days: number;
 
+  summer_watering_check_days: number | null;
+  winter_watering_check_days: number | null;
+
+  summer_fertilizer_interval_days: number | null;
+  winter_fertilizer_interval_days: number | null;
+
+  seasonal_care_enabled: boolean;
+
+  moist_recheck_days: number;
+
   fertilizer_interval_days: number | null;
   fertilizer_enabled: boolean;
 

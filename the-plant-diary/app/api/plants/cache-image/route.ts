@@ -1,101 +1,236 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-);
+import {
+  createClient,
+} from "@supabase/supabase-js";
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest
+) {
   try {
-    const { sourceUrl, plantId } = await request.json();
+    const authorization =
+      request.headers.get(
+        "authorization"
+      );
 
-    if (!sourceUrl || !plantId) {
+    if (!authorization) {
       return NextResponse.json(
-        { error: "sourceUrl and plantId are required." },
-        { status: 400 }
+        {
+          error:
+            "Authentication required.",
+        },
+        {
+          status: 401,
+        }
       );
     }
 
-    const parsedUrl = new URL(sourceUrl);
+    const token =
+      authorization.replace(
+        "Bearer ",
+        ""
+      );
 
-    // Perenual currently serves its images from Wasabi.
-    // Don't allow this endpoint to fetch arbitrary URLs.
-    if (!parsedUrl.hostname.endsWith("wasabisys.com")) {
+    const supabase =
+      createClient(
+        process.env
+          .NEXT_PUBLIC_SUPABASE_URL!,
+
+        process.env
+          .NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+
+        {
+          global: {
+            headers: {
+              Authorization:
+                `Bearer ${token}`,
+            },
+          },
+        }
+      );
+
+    const {
+      data: { user },
+      error: authError,
+    } =
+      await supabase.auth.getUser(
+        token
+      );
+
+    if (
+      authError ||
+      !user
+    ) {
       return NextResponse.json(
-        { error: "Unsupported image source." },
-        { status: 400 }
+        {
+          error:
+            "Invalid authentication.",
+        },
+        {
+          status: 401,
+        }
       );
     }
 
-    const imageResponse = await fetch(sourceUrl, {
-      cache: "no-store",
-    });
+    const {
+      sourceUrl,
+      plantId,
+    } =
+      await request.json();
+
+    if (
+      !sourceUrl ||
+      !plantId
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "sourceUrl and plantId are required.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const parsedUrl =
+      new URL(sourceUrl);
+
+    if (
+      !parsedUrl.hostname.endsWith(
+        "wasabisys.com"
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Unsupported image source.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    const imageResponse =
+      await fetch(sourceUrl, {
+        cache: "no-store",
+      });
 
     if (!imageResponse.ok) {
       return NextResponse.json(
-        { error: "Could not download plant image." },
-        { status: 502 }
+        {
+          error:
+            "Could not download plant image.",
+        },
+        {
+          status: 502,
+        }
       );
     }
 
     const contentType =
-      imageResponse.headers.get("content-type") ??
-      "image/jpeg";
+      imageResponse.headers.get(
+        "content-type"
+      ) ?? "image/jpeg";
 
-    if (!contentType.startsWith("image/")) {
+    if (
+      !contentType.startsWith(
+        "image/"
+      )
+    ) {
       return NextResponse.json(
-        { error: "Source is not an image." },
-        { status: 400 }
+        {
+          error:
+            "Source is not an image.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    const buffer = Buffer.from(
-      await imageResponse.arrayBuffer()
-    );
+    const buffer =
+      Buffer.from(
+        await imageResponse.arrayBuffer()
+      );
 
     let extension = "jpg";
 
-    if (contentType.includes("png")) {
+    if (
+      contentType.includes("png")
+    ) {
       extension = "png";
-    } else if (contentType.includes("webp")) {
+    } else if (
+      contentType.includes("webp")
+    ) {
       extension = "webp";
     }
 
     const imagePath =
-      `${plantId}/species.${extension}`;
+      `${user.id}/${plantId}/species.${extension}`;
 
-    const { error: uploadError } =
+    const {
+      error: uploadError,
+    } =
       await supabase.storage
         .from("plant-images")
-        .upload(imagePath, buffer, {
-          contentType,
-          upsert: false,
-        });
+        .upload(
+          imagePath,
+          buffer,
+          {
+            contentType,
+            upsert: false,
+          }
+        );
 
     if (uploadError) {
-      console.warn(uploadError);
+      console.warn(
+        "Species image upload:",
+        uploadError
+      );
 
       return NextResponse.json(
-        { error: "Could not store plant image." },
-        { status: 500 }
+        {
+          error:
+            uploadError.message,
+        },
+        {
+          status: 500,
+        }
       );
     }
 
-    const { data } = supabase.storage
-      .from("plant-images")
-      .getPublicUrl(imagePath);
+    const { data } =
+      supabase.storage
+        .from("plant-images")
+        .getPublicUrl(
+          imagePath
+        );
 
     return NextResponse.json({
-      imageUrl: data.publicUrl,
+      imageUrl:
+        data.publicUrl,
+
       imagePath,
     });
   } catch (error) {
-    console.warn(error);
+    console.warn(
+      "Image caching error:",
+      error
+    );
 
     return NextResponse.json(
-      { error: "Image caching failed." },
-      { status: 500 }
+      {
+        error:
+          "Image caching failed.",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }

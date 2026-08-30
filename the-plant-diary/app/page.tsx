@@ -7,7 +7,7 @@ import { CareEvent, CareEventType } from "@/types/CareEvent";
 import { PlantSpecies } from "@/types/PlantSpecies";
 import { FloraPlant } from "@/types/FloraPlant";
 import { supabase } from "@/lib/supabase";
-
+import {getCurrentPlantSeason,} from "@/lib/season";
 
 export default function Home() {
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -31,8 +31,23 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [floraCare, setFloraCare] = useState<FloraPlant | null>(null);
 
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const [checkingAuth, setCheckingAuth] = useState(true);
+    
   useEffect(() => {
   async function loadData() {
+        const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
+
+    setUserId(user.id);
+    setCheckingAuth(false);
     setLoading(true);
     setErrorMessage("");
 
@@ -42,7 +57,10 @@ export default function Home() {
     } = await supabase
       .from("plants")
       .select("*")
-      .order("created_at", { ascending: true });
+      .eq("user_id", user.id)
+      .order("created_at", {
+        ascending: true,
+      });
 
     if (plantError) {
       console.error(plantError);
@@ -74,6 +92,12 @@ export default function Home() {
 }, []);
 
   async function addPlant() {
+    if (!userId) {
+      setErrorMessage(
+        "You must be signed in to add plants."
+      );
+      return;
+    }
     if (!nickname.trim() || !species.trim()) {
       setErrorMessage("Please enter a nickname and species.");
       return;
@@ -109,19 +133,38 @@ export default function Home() {
 
     if (sourceImageUrl) {
       try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
         const imageResponse = await fetch(
           "/api/plants/cache-image",
           {
             method: "POST",
+
             headers: {
-              "Content-Type": "application/json",
+              "Content-Type":
+                "application/json",
+
+              Authorization:
+                `Bearer ${session?.access_token}`,
             },
+
             body: JSON.stringify({
-              sourceUrl: sourceImageUrl,
-              plantId: newPlantId,
+              sourceUrl:
+                sourceImageUrl,
+
+              plantId:
+                newPlantId,
             }),
           }
         );
+
+        if (!session) {
+          setErrorMessage(
+            "You must be signed in."
+          );
+          return;
+        }
 
         if (imageResponse.ok) {
           const imageData = await imageResponse.json();
@@ -145,6 +188,8 @@ export default function Home() {
       .from("plants")
       .insert({
         id: newPlantId,
+
+        user_id: userId,
 
         nickname: nickname.trim(),
 
@@ -184,13 +229,18 @@ export default function Home() {
 
         // FloraDB care information
         care_source:
-          floraCare ? "FloraDB" : null,
+          floraCare
+            ? "FloraDB"
+            : selectedSpecies
+              ? "Perenual"
+              : "Manual",
 
         care_confidence:
           floraCare?.care_confidence ?? null,
 
         light_requirement_level:
           floraCare?.light_requirement_level ??
+          selectedSpecies?.sunlight?.join(", ") ??
           null,
 
         min_lux:
@@ -273,10 +323,26 @@ export default function Home() {
     )?.event_date;
   }
 
-  function getWateringInfo(plant: Plant) {
-    const lastWatered = getLastWatered(plant.id);
+  function getLatestWateringEvent(
+    plantId: string
+  ) {
+    return careEvents.find(
+      (event) =>
+        event.plant_id === plantId &&
+        (
+          event.event_type === "watered" ||
+          event.event_type ===
+            "soil_still_moist"
+        )
+    );
+  }
 
-    if (!lastWatered) {
+  function getWateringInfo(plant: Plant) {
+    const latestEvent =
+      getLatestWateringEvent(plant.id);
+
+    // Plant has never been checked/watered
+    if (!latestEvent) {
       return {
         message: "⚠️ Check soil today",
         due: true,
@@ -284,12 +350,33 @@ export default function Home() {
       };
     }
 
-    const lastWateredDate = new Date(lastWatered);
+    const eventDate = new Date(
+      latestEvent.event_date
+    );
 
-    const nextCheckDate = new Date(lastWateredDate);
+    const nextCheckDate =
+      new Date(eventDate);
+
+    let intervalDays: number;
+
+    if (
+      latestEvent.event_type ===
+      "soil_still_moist"
+    ) {
+      // Soil was still wet:
+      // recheck relatively soon.
+      intervalDays =
+        plant.moist_recheck_days ?? 2;
+    } else {
+      // Plant was watered:
+      // restart normal seasonal schedule.
+      intervalDays =
+        getWateringInterval(plant);
+    }
 
     nextCheckDate.setDate(
-      nextCheckDate.getDate() + plant.watering_check_days
+      nextCheckDate.getDate() +
+        intervalDays
     );
 
     nextCheckDate.setHours(0, 0, 0, 0);
@@ -297,16 +384,23 @@ export default function Home() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const millisecondsPerDay = 1000 * 60 * 60 * 24;
+    const millisecondsPerDay =
+      1000 * 60 * 60 * 24;
 
     const daysUntil = Math.round(
-      (nextCheckDate.getTime() - today.getTime()) /
-        millisecondsPerDay
+      (
+        nextCheckDate.getTime() -
+        today.getTime()
+      ) / millisecondsPerDay
     );
 
     if (daysUntil > 1) {
       return {
-        message: `💧 Check soil in ${daysUntil} days`,
+        message:
+          latestEvent.event_type ===
+          "soil_still_moist"
+            ? `💦 Soil was still moist · check again in ${daysUntil} days`
+            : `💧 Check soil in ${daysUntil} days`,
         due: false,
         daysUntil,
       };
@@ -314,7 +408,11 @@ export default function Home() {
 
     if (daysUntil === 1) {
       return {
-        message: "💧 Check soil tomorrow",
+        message:
+          latestEvent.event_type ===
+          "soil_still_moist"
+            ? "💦 Soil was still moist · check again tomorrow"
+            : "💧 Check soil tomorrow",
         due: false,
         daysUntil,
       };
@@ -328,7 +426,8 @@ export default function Home() {
       };
     }
 
-    const overdueDays = Math.abs(daysUntil);
+    const overdueDays =
+      Math.abs(daysUntil);
 
     return {
       message:
@@ -339,7 +438,7 @@ export default function Home() {
       daysUntil,
     };
   }
-
+  
   function getLastFertilized(plantId: string) {
     return careEvents.find(
       (event) =>
@@ -369,13 +468,22 @@ export default function Home() {
         daysUntil: 0,
       };
     }
+    
 
     const lastDate = new Date(lastFertilized);
     const nextDate = new Date(lastDate);
-
+    const fertilizerInterval = getFertilizerInterval(plant);
+    
+    if (!fertilizerInterval) {
+      return {
+        message: "Fertilizer disabled",
+        due: false,
+        daysUntil: null,
+      };
+    }
     nextDate.setDate(
       nextDate.getDate() +
-        plant.fertilizer_interval_days
+        fertilizerInterval
     );
 
     nextDate.setHours(0, 0, 0, 0);
@@ -600,6 +708,61 @@ export default function Home() {
       getSuggestedWateringDays(result)
     );
   }
+
+  function getWateringInterval(
+    plant: Plant
+  ): number {
+    if (!plant.seasonal_care_enabled) {
+      return plant.watering_check_days;
+    }
+
+    const season = getCurrentPlantSeason();
+
+    if (season === "summer") {
+      return (
+        plant.summer_watering_check_days ??
+        plant.watering_check_days
+      );
+    }
+
+    return (
+      plant.winter_watering_check_days ??
+      plant.watering_check_days
+    );
+  }
+
+  function getFertilizerInterval(
+    plant: Plant
+  ): number | null {
+    if (!plant.fertilizer_enabled) {
+      return null;
+    }
+
+    if (!plant.seasonal_care_enabled) {
+      return plant.fertilizer_interval_days;
+    }
+
+    const season = getCurrentPlantSeason();
+
+    if (season === "summer") {
+      return (
+        plant.summer_fertilizer_interval_days ??
+        plant.fertilizer_interval_days
+      );
+    }
+
+    return (
+      plant.winter_fertilizer_interval_days ??
+      plant.fertilizer_interval_days
+    );
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+
+    window.location.href = "/login";
+  }
+
   return (
     <main className="min-h-screen bg-green-50 text-gray-900">
       <div className="mx-auto max-w-5xl p-6">
@@ -620,6 +783,13 @@ export default function Home() {
             className="rounded-xl bg-green-700 px-5 py-3 font-medium text-white hover:bg-green-800"
           >
             + Add Plant
+          </button>
+
+          <button
+            onClick={signOut}
+            className="rounded-xl border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            Sign out
           </button>
         </header>
 
